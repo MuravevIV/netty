@@ -15,7 +15,7 @@
  */
 package io.netty.handler.codec.http;
 
-import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteWriter;
 import io.netty.util.CharsetUtil;
 
 final class HttpHeaderEntity implements CharSequence {
@@ -54,7 +54,7 @@ final class HttpHeaderEntity implements CharSequence {
         return name;
     }
 
-    void encode(ByteBuf buf) {
+    void encode(ByteWriter buf) {
         buf.writeBytes(bytes);
     }
 }

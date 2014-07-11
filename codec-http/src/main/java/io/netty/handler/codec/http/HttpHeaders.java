@@ -15,7 +15,7 @@
  */
 package io.netty.handler.codec.http;
 
-import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteWriter;
 
 import java.text.ParseException;
 import java.util.Calendar;
@@ -1351,36 +1351,36 @@ public abstract class HttpHeaders implements Iterable<Map.Entry<String, String>>
         }
     }
 
-    static void encode(HttpHeaders headers, ByteBuf buf) {
+    static void encode(HttpHeaders headers, ByteWriter writer) {
         if (headers instanceof DefaultHttpHeaders) {
-            ((DefaultHttpHeaders) headers).encode(buf);
+            ((DefaultHttpHeaders) headers).encode(writer);
         } else {
             for (Entry<String, String> header: headers) {
-                encode(header.getKey(), header.getValue(), buf);
+                encode(header.getKey(), header.getValue(), writer);
             }
         }
     }
 
     @SuppressWarnings("deprecation")
-    static void encode(CharSequence key, CharSequence value, ByteBuf buf) {
+    static void encode(CharSequence key, CharSequence value, ByteWriter buf) {
         encodeAscii(key, buf);
         buf.writeBytes(HEADER_SEPERATOR);
         encodeAscii(value, buf);
         buf.writeBytes(CRLF);
     }
 
-    public static void encodeAscii(CharSequence seq, ByteBuf buf) {
+    public static void encodeAscii(CharSequence seq, ByteWriter writer) {
         if (seq instanceof HttpHeaderEntity) {
-            ((HttpHeaderEntity) seq).encode(buf);
+            ((HttpHeaderEntity) seq).encode(writer);
         } else {
-            encodeAscii0(seq, buf);
+            encodeAscii0(seq, writer);
         }
     }
 
-    static void encodeAscii0(CharSequence seq, ByteBuf buf) {
+    static void encodeAscii0(CharSequence seq, ByteWriter writer) {
         int length = seq.length();
         for (int i = 0 ; i < length; i++) {
-            buf.writeByte((byte) seq.charAt(i));
+            writer.writeByte((byte) seq.charAt(i));
         }
     }
 

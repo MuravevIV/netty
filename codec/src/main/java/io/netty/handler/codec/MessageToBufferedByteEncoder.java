@@ -17,7 +17,6 @@ package io.netty.handler.codec;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteWriter;
-import io.netty.channel.Channel;
 import io.netty.channel.ChannelFlushPromiseNotifier;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
@@ -31,20 +30,14 @@ import io.netty.util.ReferenceCountUtil;
 import io.netty.util.internal.TypeParameterMatcher;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.List;
 
 
 /**
- * {@link MessageToByteEncoder} which encodes message in a stream-like fashion from one message to an
- * {@link ByteBuf}. The difference between {@link MessageToBufferedByteEncoder} and {@link MessageToByteEncoder} is
- * that {@link MessageToBufferedByteEncoder}  will try to write multiple writes into one {@link ByteBuf} and only
- * write it to the next {@link ChannelOutboundHandler} in the {@link ChannelPipeline} if either:
- * <ul>
- *   <li>{@link Channel#flush()} is called</li>
- *   <li>{@link Channel#close()} is called</li>
- *   <li>{@link Channel#disconnect()} is called</li>
- * </ul>
+ * {@link ChannelOutboundHandlerAdapter} which encodes message in a stream-like fashion.
+ * The difference between {@link MessageToBufferedByteEncoder} and {@link MessageToByteEncoder} is
+ * that {@link MessageToBufferedByteEncoder}  will try to write multiple writes into one {@link ByteBuf} up to
+ * {@code initialBufferCapacity} and only write it to the next {@link ChannelOutboundHandler} in the
+ * {@link ChannelPipeline} if needed.
  *
  * You should use this {@link MessageToBufferedByteEncoder} if you expect to either write messages in multiple parts
  * or if the used protocol supports PIPELINING.
@@ -54,9 +47,9 @@ import java.util.List;
  * <pre>
  *     public class IntegerEncoder extends {@link MessageToBufferedByteEncoder}&lt;{@link Integer}&gt; {
  *         {@code @Override}
- *         public void encode({@link ChannelHandlerContext} ctx, {@link Integer} msg, {@link ByteBuf} out)
+ *         public void encode({@link ChannelHandlerContext} ctx, {@link Integer} msg, {@link Encoder} encoder)
  *                 throws {@link Exception} {
- *             out.writeInt(msg);
+ *             encoder.writeInt(msg);
  *         }
  *     }
  * </pre>
@@ -67,7 +60,7 @@ public abstract class MessageToBufferedByteEncoder<I> extends ChannelOutboundHan
     private final boolean preferDirect;
 
     private static final int DEFAULT_BUFFER_SIZE = 1024;
-    private final int bufferSize;
+    private final int initialBufferCapacity;
     private Encoder writer;
 
     /**
@@ -80,20 +73,20 @@ public abstract class MessageToBufferedByteEncoder<I> extends ChannelOutboundHan
     /**
      * Create a new instance
      *
-     * @param bufferSize            The size of the buffer when it is allocated.
+     * @param initialBufferCapacity            The size of the buffer when it is allocated.
      */
-    protected MessageToBufferedByteEncoder(int bufferSize) {
-        this(true, bufferSize);
+    protected MessageToBufferedByteEncoder(int initialBufferCapacity) {
+        this(true, initialBufferCapacity);
     }
 
     /**
      * Create a new instance
      *
      * @param outboundMessageType   The tpye of messages to match
-     * @param bufferSize            The size of the buffer when it is allocated.
+     * @param initialBufferCapacity The size of the buffer when it is allocated.
      */
-    protected MessageToBufferedByteEncoder(Class<? extends I> outboundMessageType, int bufferSize) {
-        this(outboundMessageType, true, bufferSize);
+    protected MessageToBufferedByteEncoder(Class<? extends I> outboundMessageType, int initialBufferCapacity) {
+        this(outboundMessageType, true, initialBufferCapacity);
     }
 
     /**
@@ -102,13 +95,13 @@ public abstract class MessageToBufferedByteEncoder<I> extends ChannelOutboundHan
      * @param preferDirect          {@code true} if a direct {@link ByteBuf} should be tried to be used as target for
      *                              the encoded messages. If {@code false} is used it will allocate a heap
      *                              {@link ByteBuf}, which is backed by an byte array.
-     * @param bufferSize            The size of the buffer when it is allocated.
+     * @param initialBufferCapacity The size of the buffer when it is allocated.
      */
-    protected MessageToBufferedByteEncoder(boolean preferDirect, int bufferSize) {
+    protected MessageToBufferedByteEncoder(boolean preferDirect, int initialBufferCapacity) {
         checkSharable();
-        checkBufferSize(bufferSize);
+        checkBufferSize(initialBufferCapacity);
         matcher = TypeParameterMatcher.find(this, MessageToBufferedByteEncoder.class, "I");
-        this.bufferSize = bufferSize;
+        this.initialBufferCapacity = initialBufferCapacity;
         this.preferDirect = preferDirect;
     }
 
@@ -119,27 +112,27 @@ public abstract class MessageToBufferedByteEncoder<I> extends ChannelOutboundHan
      * @param preferDirect          {@code true} if a direct {@link ByteBuf} should be tried to be used as target for
      *                              the encoded messages. If {@code false} is used it will allocate a heap
      *                              {@link ByteBuf}, which is backed by an byte array.
-     * @param bufferSize            The size of the buffer when it is allocated.
+     * @param initialBufferCapacity The size of the buffer when it is allocated.
      */
     protected MessageToBufferedByteEncoder(
-            Class<? extends I> outboundMessageType, boolean preferDirect, int bufferSize) {
+            Class<? extends I> outboundMessageType, boolean preferDirect, int initialBufferCapacity) {
         checkSharable();
-        checkBufferSize(bufferSize);
+        checkBufferSize(initialBufferCapacity);
         matcher = TypeParameterMatcher.get(outboundMessageType);
-        this.bufferSize = bufferSize;
+        this.initialBufferCapacity = initialBufferCapacity;
         this.preferDirect = preferDirect;
     }
 
-    private static void checkBufferSize(int bufferSize) {
-        if (bufferSize < 0) {
+    private static void checkBufferSize(int initialBufferCapacity) {
+        if (initialBufferCapacity < 0) {
             throw new IllegalArgumentException(
-                    "bufferSize must be a >= 0: " +
-                            bufferSize);
+                    "initialBufferCapacity must be a >= 0: " +
+                            initialBufferCapacity);
         }
     }
 
     private void checkSharable() {
-        if (getClass().isAnnotationPresent(Sharable.class)) {
+        if (isSharable()) {
             throw new IllegalStateException("@Sharable annotation is not allowed");
         }
     }
@@ -161,11 +154,9 @@ public abstract class MessageToBufferedByteEncoder<I> extends ChannelOutboundHan
 
                 Encoder writer = this.writer;
                 try {
+                    writer.init();
                     encode(ctx, cast, writer);
-                    writer.pending(promise);
-                } catch (Throwable e) {
-                    // TODO: handle
-                    throw e;
+                    writer.notifyLater(promise);
                 } finally {
                     ReferenceCountUtil.release(cast);
                 }
@@ -192,20 +183,6 @@ public abstract class MessageToBufferedByteEncoder<I> extends ChannelOutboundHan
         super.disconnect(ctx, promise);
     }
 
-    protected ByteBuf allocateBuffer(ChannelHandlerContext ctx, boolean preferDirect, int bufferSize) {
-        if (preferDirect) {
-            if (bufferSize == 0) {
-                return ctx.alloc().ioBuffer();
-            }
-            return ctx.alloc().ioBuffer(bufferSize);
-        } else {
-            if (bufferSize == 0) {
-                return ctx.alloc().heapBuffer();
-            }
-            return ctx.alloc().heapBuffer(bufferSize);
-        }
-    }
-
     @Override
     public void flush(ChannelHandlerContext ctx) throws Exception {
         writer.flush();
@@ -214,7 +191,7 @@ public abstract class MessageToBufferedByteEncoder<I> extends ChannelOutboundHan
 
     @Override
     public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
-        writer = new Encoder(this, ctx);
+        writer = new Encoder(ctx, preferDirect, initialBufferCapacity);
         super.handlerAdded(ctx);
     }
 
@@ -244,218 +221,174 @@ public abstract class MessageToBufferedByteEncoder<I> extends ChannelOutboundHan
     protected abstract void encode(ChannelHandlerContext ctx, I msg, Encoder out) throws Exception;
 
     public static final class Encoder implements ByteWriter {
-        private final MessageToBufferedByteEncoder<?> encoder;
-        private final ChannelHandlerContext ctx;
-        private final List<Object> pending = new ArrayList<Object>();
-        private int last = -1;
         private final ChannelFlushPromiseNotifier notifier = new ChannelFlushPromiseNotifier();
-        private long delta;
+        private final ChannelHandlerContext ctx;
+        private final int initialBufferCapacity;
+        private final boolean preferDirect;
+        private int writerIndex;
+        private ByteBuf wrapped;
 
-        private Encoder(MessageToBufferedByteEncoder<?> encoder, ChannelHandlerContext ctx) {
-            this.encoder = encoder;
+        private Encoder(ChannelHandlerContext ctx, boolean preferDirect, int initialBufferCapacity) {
             this.ctx = ctx;
+            this.preferDirect = preferDirect;
+            this.initialBufferCapacity = initialBufferCapacity;
+        }
+
+        private void init() {
+            if (wrapped == null) {
+                wrapped = allocateBuffer();
+            }
+            writerIndex = wrapped.writerIndex();
+        }
+
+        private ByteBuf allocateBuffer() {
+            if (preferDirect) {
+                if (initialBufferCapacity == 0) {
+                    return ctx.alloc().ioBuffer();
+                }
+                return ctx.alloc().ioBuffer(initialBufferCapacity);
+            } else {
+                if (initialBufferCapacity == 0) {
+                    return ctx.alloc().heapBuffer();
+                }
+                return ctx.alloc().heapBuffer(initialBufferCapacity);
+            }
         }
 
         @Override
         public Encoder writeBoolean(boolean value) {
-            ByteBuf buffer = wrapped();
-            int writerIndex = buffer.writerIndex();
-            buffer.writeBoolean(value);
-            delta += buffer.writerIndex() - writerIndex;
+            wrapped.writeBoolean(value);
             return this;
         }
 
         @Override
         public Encoder writeByte(int value) {
-            ByteBuf buffer = wrapped();
-            int writerIndex = buffer.writerIndex();
-            buffer.writeByte(value);
-            delta += buffer.writerIndex() - writerIndex;
+            wrapped.writeByte(value);
             return this;
         }
 
         @Override
         public Encoder writeShort(int value) {
-            ByteBuf buffer = wrapped();
-            int writerIndex = buffer.writerIndex();
-            buffer.writeShort(value);
-            delta += buffer.writerIndex() - writerIndex;
+            wrapped.writeShort(value);
             return this;
         }
 
         @Override
         public Encoder writeMedium(int value) {
-            ByteBuf buffer = wrapped();
-            int writerIndex = buffer.writerIndex();
-            buffer.writeMedium(value);
-            delta += buffer.writerIndex() - writerIndex;
+            wrapped.writeMedium(value);
             return this;
         }
 
         @Override
         public Encoder writeInt(int value) {
-            ByteBuf buffer = wrapped();
-            int writerIndex = buffer.writerIndex();
-            buffer.writeInt(value);
-            delta += buffer.writerIndex() - writerIndex;
+            wrapped.writeInt(value);
             return this;
         }
 
         @Override
         public Encoder writeLong(long value) {
-            ByteBuf buffer = wrapped();
-            int writerIndex = buffer.writerIndex();
-            buffer.writeLong(value);
-            delta += buffer.writerIndex() - writerIndex;
+            wrapped.writeLong(value);
             return this;
         }
 
         @Override
         public Encoder writeChar(int value) {
-            ByteBuf buffer = wrapped();
-            int writerIndex = buffer.writerIndex();
-            buffer.writeChar(value);
-            delta += buffer.writerIndex() - writerIndex;
+            wrapped.writeChar(value);
             return this;
         }
 
         @Override
         public Encoder writeFloat(float value) {
-            ByteBuf buffer = wrapped();
-            int writerIndex = buffer.writerIndex();
-            buffer.writeFloat(value);
-            delta += buffer.writerIndex() - writerIndex;
+            wrapped.writeFloat(value);
             return this;
         }
 
         @Override
         public Encoder writeDouble(double value) {
-            ByteBuf buffer = wrapped();
-            int writerIndex = buffer.writerIndex();
-            buffer.writeDouble(value);
-            delta += buffer.writerIndex() - writerIndex;
+            wrapped.writeDouble(value);
             return this;
         }
 
         @Override
         public Encoder writeBytes(ByteBuf src) {
-            ByteBuf buffer = wrapped();
-            int writerIndex = buffer.writerIndex();
-            buffer.writeBytes(src);
-            delta += buffer.writerIndex() - writerIndex;
+            wrapped.writeBytes(src);
             return this;
         }
 
         @Override
         public Encoder writeBytes(ByteBuf src, int length) {
-            ByteBuf buffer = wrapped();
-            int writerIndex = buffer.writerIndex();
-            buffer.writeBytes(src, length);
-            delta += buffer.writerIndex() - writerIndex;
+            wrapped.writeBytes(src, length);
             return this;
         }
 
         @Override
         public Encoder writeBytes(ByteBuf src, int srcIndex, int length) {
-            ByteBuf buffer = wrapped();
-            int writerIndex = buffer.writerIndex();
-            buffer.writeBytes(src, srcIndex, length);
-            delta += buffer.writerIndex() - writerIndex;
+            wrapped.writeBytes(src, srcIndex, length);
             return this;
         }
 
         @Override
         public Encoder writeBytes(byte[] src) {
-            ByteBuf buffer = wrapped();
-            int writerIndex = buffer.writerIndex();
-            buffer.writeBytes(src);
-            delta += buffer.writerIndex() - writerIndex;
+            wrapped.writeBytes(src);
             return this;
         }
 
         @Override
         public Encoder writeBytes(byte[] src, int srcIndex, int length) {
-            ByteBuf buffer = wrapped();
-            int writerIndex = buffer.writerIndex();
-            buffer.writeBytes(src, srcIndex, length);
-            delta += buffer.writerIndex() - writerIndex;
+            wrapped.writeBytes(src, srcIndex, length);
             return this;
         }
 
         @Override
         public Encoder writeBytes(ByteBuffer src) {
-            ByteBuf buffer = wrapped();
-            int writerIndex = buffer.writerIndex();
-            buffer.writeBytes(src);
-            delta += buffer.writerIndex() - writerIndex;
+            wrapped.writeBytes(src);
             return this;
         }
 
+        /**
+         * Write {@link FileRegion} to the {@link Encoder} and return itself.
+         */
         public Encoder writeFileRegion(FileRegion region) {
-            pending.add(++last, region);
-            delta += region.count();
+            if (region == null) {
+                throw new NullPointerException("region");
+            }
+            // flush now to preserve correct order
+            flush();
+            ctx.write(region);
+            init();
             return this;
         }
 
-        private ByteBuf wrapped() {
-            if (last == -1) {
-                ByteBuf buf = encoder.allocateBuffer(ctx, encoder.preferDirect, encoder.bufferSize);
-                pending.add(++last, buf);
-                return buf;
-            }
-            Object p = pending.get(last);
-            if (!(p instanceof ByteBuf)) {
-                ByteBuf buf = encoder.allocateBuffer(ctx, encoder.preferDirect, encoder.bufferSize);
-                pending.add(++last, buf);
-                p = buf;
-            }
-            return (ByteBuf) p;
-        }
-
-        private void pending(ChannelPromise promise) {
+        private void notifyLater(ChannelPromise promise) {
+            long delta = wrapped.writerIndex() - writerIndex;
             ctx.channel().unsafe().outboundBuffer().incrementPendingOutboundBytes(delta);
             // add to notifier so the promise will be notified later once we wrote everything
             notifier.add(promise, delta);
         }
 
         private void flush() {
-            if (pending.isEmpty()) {
+            ByteBuf buffer = wrapped;
+            if (buffer == null) {
                 return;
             }
-            int size = pending.size();
-            for (int i = 0; i < size; i ++) {
-                Object msg = pending.get(i);
+            wrapped = null;
+            writerIndex = 0;
 
-                final long length = size(msg);
+            final int size = buffer.readableBytes();
+            // Decrement now as we will now trigger the actual write
+            ctx.channel().unsafe().outboundBuffer().decrementPendingOutboundBytes(size);
 
-                // Decrement now as we will actually fire stuff through the pipeline
-                ctx.channel().unsafe().outboundBuffer().decrementPendingOutboundBytes(length);
-
-                ctx.write(msg).addListener(new ChannelFutureListener() {
-                    @Override
-                    public void operationComplete(ChannelFuture future) throws Exception {
-                        notifier.increaseWriteCounter(length);
-                        if (future.isSuccess()) {
-                            notifier.notifyPromises();
-                        } else {
-                            notifier.notifyPromises(future.cause());
-                        }
+            ctx.write(buffer).addListener(new ChannelFutureListener() {
+                @Override
+                public void operationComplete(ChannelFuture future) throws Exception {
+                    notifier.increaseWriteCounter(size);
+                    if (future.isSuccess()) {
+                        notifier.notifyPromises();
+                    } else {
+                        notifier.notifyPromises(future.cause());
                     }
-                });
-            }
-            last = -1;
-            pending.clear();
-            delta = 0;
-        }
-
-        private static long size(Object msg) {
-            if (msg instanceof ByteBuf) {
-                return ((ByteBuf) msg).readableBytes();
-            }
-            if (msg instanceof FileRegion) {
-                return ((FileRegion) msg).count();
-            }
-            throw new Error();
+                }
+            });
         }
     }
 }
